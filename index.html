@@ -880,7 +880,45 @@
   box-shadow: 0 0 10px rgba(255, 215, 0, 0.4);
 }
 
+
+#gameHeader {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    background: rgba(255,255,255,0.9);
+    padding: 10px;
+    border-radius: 5px;
+}
+
+#playersList {
+    margin-top: 5px;
+    color: #333;
+    font-weight: bold;
+}
 </style>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+    const socket = io('https://your-server-url.herokuapp.com');
+    let currentPlayerId = localStorage.getItem('playerId');
+
+    socket.on('playersUpdate', (players) => {
+            const playersList = document.getElementById('playersList');
+            playersList.innerHTML = players.map(p => `اللاعب ${p.playerNumber}`).join(' | ');
+        });
+
+        // الاستماع لتحديثات الخادم
+        socket.on('goldenBoxActive', (isActive) => {
+            const box = document.getElementById('goldenBox');
+            box.style.display = isActive ? 'block' : 'none';
+        });
+
+        socket.on('scoreUpdate', (data) => {
+            if (data.playerId === socket.id) {
+                document.getElementById('score').textContent = data.newScore;
+                alert(`+${data.reward} نقطة!`);
+            }
+        });
+</script>
 </head>
 <body>
     
@@ -891,9 +929,13 @@
     <img src="infinity_logo.png" alt="شعار INFINITY" class="game-logo">
 </header>
 
-    
     <p style="font-size: 2.9em; color: #bbb;">مُقدمة لكم من فريق <span class="infinity-highlight">INFINITY</span></p>
     <p style="font-size: 0.8em; color: #999;">تاريخ الإنشاء: 2024/6/1 - تاريخ التحديث: 2025/6/1</p>
+
+    <div id="gameHeader">
+    <h2>لاعب رقم: <span id="currentPlayerNumber">0</span></h2>
+    <div id="playersList"></div>
+</div>
 
     <div class="main-buttons-container">
         <button id="toggleBtn"><i class="fas fa-cog"></i> إظهار الإعدادات</button>
@@ -976,6 +1018,16 @@
         let luckyHitPulseTimeout = null; // مؤقت جديد لإيقاف النبض
         let isLuckyHitActiveGlobally = false;
         let luckyHitBoxToOpen = null;
+
+        function checkAdminAccess() {
+            const adminCode = prompt('أدخل كود الأدمن:');
+            if (adminCode === 'admin123') {
+                localStorage.setItem('userType', 'admin');
+                location.reload();
+            } else {
+                alert('كود الأدمن غير صحيح');
+            }
+        }
 
         // وظائف حفظ وتحميل الإعدادات
         function saveSettings() {
@@ -1071,7 +1123,17 @@
         }
 
         function startGame() {
-            if (gameActive) {
+        const userType = localStorage.getItem('userType') || 'player';
+        
+        if (userType !== 'admin') {
+            alert('فقط الأدمن المسجل يمكنه بدء اللعبة');
+            return;
+        }
+
+        document.getElementById('startGameBtn').disabled = true;
+        document.getElementById('restartGameBtn').disabled = false;
+
+        if (gameActive) {
                 if (!confirm("اللعبة جارية. هل أنت متأكد أنك تريد البدء من جديد؟")) {
                     return;
                 }
@@ -1089,7 +1151,8 @@
                     id: index,
                     name: input.value || `اللاعب ${index + 1}`,
                     score: 0,
-                    openedBoxes: []
+                    openedBoxes: [],
+                    boxesOpenedThisTurn: 0 // إضافة خاصية جديدة لتتبع الصناديق المفتوحة في هذا الدور
                 });
             });
             currentPlayer = 0;
@@ -1178,6 +1241,22 @@
                 return;
             }
 
+            // إضافة منطق التحقق من عدد الصناديق المفتوحة في الدور الحالي
+            if (playerScores[currentPlayer].boxesOpenedThisTurn >= 1) {
+                const cost = 500;
+                if (playerScores[currentPlayer].score >= cost) {
+                    if (!confirm(`لقد فتحت صندوقًا بالفعل في هذا الدور. هل تريد فتح صندوق آخر مقابل ${cost} نقطة؟ رصيدك الحالي: ${playerScores[currentPlayer].score}`)) {
+                        document.getElementById('message').textContent = `انتظر دورك يا ${playerScores[currentPlayer].name}.`; // رسالة انتظار الدور
+                        return; // المستخدم رفض الدفع
+                    }
+                    playerScores[currentPlayer].score -= cost;
+                    document.getElementById('message').textContent = `تم خصم ${cost} نقطة لفتح صندوق إضافي. رصيدك الحالي: ${playerScores[currentPlayer].score}.`;
+                } else {
+                    document.getElementById('message').textContent = `لا يمكنك فتح صندوق آخر في هذا الدور. تحتاج إلى ${cost} نقطة إضافية. رصيدك الحالي: ${playerScores[currentPlayer].score}. انتظر دورك يا ${playerScores[currentPlayer].name}.`;
+                    return; // لا توجد نقاط كافية
+                }
+            }
+
             // إذا كان هذا الصندوق يُفتح كجزء من Lucky Hit
             if (isLuckyHitActiveGlobally && originalBoxId === luckyHitBoxToOpen.id) {
                 // بمجرد فتح الصندوق الخاص بالـ Lucky Hit، قم بمسح الـ luckyHitBoxToOpen
@@ -1194,6 +1273,7 @@
                 points: box.points,
                 golden: box.golden
             });
+            playerScores[currentPlayer].boxesOpenedThisTurn++; // زيادة عداد الصناديق المفتوحة لهذا الدور
 
             boxElement.classList.add('opened');
             if (box.golden) {
@@ -1233,13 +1313,15 @@
                 showScores();
                 updateButtonVisibility();
             } else {
-                // لا ننتقل للاعب التالي إذا كانت Lucky Hit نشطة (الصوت يعمل)
-                // لأن الانتقال سيحدث بعد انتهاء المؤقت الخاص بالـ 60 ثانية.
                 if (!isLuckyHitActiveGlobally) {
-                    currentPlayer = (currentPlayer + 1) % playerScores.length;
-                    setTimeout(() => {
-                        document.getElementById('message').textContent = `دور ${playerScores[currentPlayer].name}. افتح صندوقًا!`;
-                    }, 1500);
+                    // إذا لم تكن Lucky Hit نشطة، ننتقل للدور التالي بعد فتح الصندوق الأول أو المدفوع
+                    if (playerScores[currentPlayer].boxesOpenedThisTurn === 1 || (playerScores[currentPlayer].boxesOpenedThisTurn > 1 && playerScores[currentPlayer].score >= 0)) { // تأكد من أن اللاعب دفع أو هذا هو الصندوق الأول
+                        playerScores[currentPlayer].boxesOpenedThisTurn = 0; // إعادة تعيين عداد الصناديق المفتوحة للدور الحالي عند انتقال الدور
+                        currentPlayer = (currentPlayer + 1) % playerScores.length;
+                        setTimeout(() => {
+                            document.getElementById('message').textContent = `دور ${playerScores[currentPlayer].name}. افتح صندوقًا!`;
+                        }, 1500);
+                    }
                 }
             }
             updateButtonVisibility();
@@ -1507,41 +1589,93 @@
             }
         }
 
+        // استبدال دالة فتح الصندوق المحلية
+        function handleGoldenBoxClick() {
+            const cost = 500;
+            socket.emit('openGoldenBox', { cost: cost });
+        }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            loadSettings();
 
-            document.getElementById('numPlayers').addEventListener('change', () => {
-                saveSettings();
-            });
-            document.getElementById('numBoxes').addEventListener('change', () => {
-                saveSettings();
-            });
+document.addEventListener('DOMContentLoaded', () => {
+    const userType = localStorage.getItem('userType') || 'player';
 
-            let saveTimeout;
-            document.getElementById('playerInputsTableBody').addEventListener('input', (event) => {
-                if (event.target.tagName === 'INPUT' && event.target.type === 'text') {
-                    clearTimeout(saveTimeout);
-                    saveTimeout = setTimeout(saveSettings, 500);
-                }
-            });
+    const luckyBtn = document.getElementById("luckyHitBtn");
+    const gameArea = document.getElementById("gameArea");
+    const settingsArea = document.getElementById("settingsArea");
+    const toggleBtn = document.getElementById("toggleBtn");
 
-            document.getElementById('toggleBtn').addEventListener('click', toggleSettings);
-            document.getElementById('startGameBtn').addEventListener('click', startGame);
-            document.getElementById('restartGameBtn').addEventListener('click', restartGameWithoutSettings);
-            document.getElementById('showScoresBtn').addEventListener('click', showScores);
-            document.getElementById('luckyHitBtn').addEventListener('click', activateLuckyHit);
-            document.getElementById('volumeUpBtn').addEventListener('click', increaseVolume);
-            document.getElementById('volumeDownBtn').addEventListener('click', decreaseVolume);
-            document.getElementById('muteToggleBtn').addEventListener('click', toggleMute); // إضافة مستمع الحدث لزر الكتم
+    if (userType === 'admin') {
+        // عرض إعدادات المسؤول مباشرة
+        settingsArea.style.display = 'block';
+        toggleBtn.innerHTML = '<i class="fas fa-eye-slash"></i> إخفاء الإعدادات';
+        // التأكد من تحديث رؤية الأزرار والإعدادات للمسؤول
+        loadSettings();
+        updateButtonVisibility();
+        if (openedBoxes.length === 0 && playerScores.length === 0) {
+            document.getElementById('message').textContent = 'قم بضبط الإعدادات واضغط "ابدا اللعبة".';
+        }
+    } else { // userType === 'player'
+        // إخفاء إعدادات اللاعب
+        settingsArea.style.display = 'none';
 
-            document.getElementById('settingsArea').style.display = 'block';
-            document.getElementById('toggleBtn').innerHTML = '<i class="fas fa-eye-slash"></i> إخفاء الإعدادات';
-            updateButtonVisibility();
-            if (openedBoxes.length === 0 && playerScores.length === 0) {
-                document.getElementById('message').textContent = 'قم بضبط الإعدادات واضغط "ابدا اللعبة".';
+        // اسأل اللاعب عن كود السماح مباشرة دون تأخير
+        const code = prompt("🔐 أدخل كود السماح بالمشاركة:");
+        const allowedCodes = ["1234", "ahlan", "infinity"];
+
+        if (allowedCodes.includes(code)) {
+            alert("✅ تم السماح لك بالمشاركة. يمكنك اللعب الآن.");
+        } else {
+            alert("🚫 كود غير صحيح. سيتم منع الوصول إلى اللعبة.");
+            document.getElementById('startGameBtn').disabled = true;
+            document.getElementById('restartGameBtn').disabled = true;
+            document.getElementById('toggleBtn').style.display = 'none';
+
+            // تعطيل زر ضربة الحظ
+            if (luckyBtn) luckyBtn.disabled = true;
+            document.getElementById('startGameBtn').disabled = true;
+            document.getElementById('restartGameBtn').disabled = true;
+            document.getElementById('toggleBtn').style.display = 'none';
+
+            // تعطيل فتح الصناديق
+            if (gameArea) {
+                gameArea.addEventListener("click", function (e) {
+                    const box = e.target.closest(".box");
+                    if (box && !box.classList.contains("opened")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        alert("🚫 غير مسموح بفتح الصناديق. تحتاج كود صحيح.");
+                    }
+                }, true);
             }
-        });
+        }
+    }
+
+    // إضافة مستمعي الأحداث العامة هنا، خارج شرط userType
+    document.getElementById('numPlayers').addEventListener('change', () => {
+        saveSettings();
+    });
+    document.getElementById('numBoxes').addEventListener('change', () => {
+        saveSettings();
+    });
+
+    let saveTimeout;
+    document.getElementById('playerInputsTableBody').addEventListener('input', (event) => {
+        if (event.target.tagName === 'INPUT' && event.target.type === 'text') {
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(saveSettings, 500);
+        }
+    });
+
+    document.getElementById('toggleBtn').addEventListener('click', toggleSettings);
+    document.getElementById('startGameBtn').addEventListener('click', startGame);
+    document.getElementById('restartGameBtn').addEventListener('click', restartGameWithoutSettings);
+    document.getElementById('showScoresBtn').addEventListener('click', showScores);
+    document.getElementById('luckyHitBtn').addEventListener('click', activateLuckyHit);
+    document.getElementById('volumeUpBtn').addEventListener('click', increaseVolume);
+    document.getElementById('volumeDownBtn').addEventListener('click', decreaseVolume);
+    document.getElementById('muteToggleBtn').addEventListener('click', toggleMute); // إضافة مستمع الحدث لزر الكتم
+
+});
     </script>
 </body>
 </html>
